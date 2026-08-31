@@ -1,0 +1,31 @@
+# Thin caller: delegates to the CodeReviewer engine's reusable Unity review.
+#
+# NOTE ON THIS REPO: the engine's deep-review stage is Unity/C#-aware, and this
+# repo is C. review_paths is overridden to **/*.c purely so the pipeline has a
+# non-empty reviewable file set to exercise — the review *content* will be
+# off-domain. Left at the default **/*.cs, every gate would report ➖ skipped.
+name: Unity Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]          # enables the `@unity-review run` re-run command
+
+# Capped by the caller, so grant them here:
+#   pull-requests: write  -> Stage 3 posts the sticky comment
+#   id-token: write       -> the Claude action's OIDC token exchange
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    uses: iam-adnan/CodeReviewer/.github/workflows/unity-review.yml@main
+    secrets: inherit          # forwards CLAUDE_CODE_OAUTH_TOKEN + ENGINE_CHECKOUT_TOKEN
+    with:
+      # The engine default is pinned literally to claude-opus-4-8 and is not a
+      # "latest" alias, so a newer model has to be passed explicitly.
+      model: claude-opus-5
+      review_paths: "**/*.c"
