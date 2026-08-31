@@ -25,7 +25,13 @@ jobs:
     uses: iam-adnan/CodeReviewer/.github/workflows/unity-review.yml@main
     secrets: inherit          # forwards CLAUDE_CODE_OAUTH_TOKEN + ENGINE_CHECKOUT_TOKEN
     with:
-      # The engine default is pinned literally to claude-opus-4-8 and is not a
-      # "latest" alias, so a newer model has to be passed explicitly.
-      model: claude-opus-5
+      # Cheapest current model, chosen deliberately for pipeline testing:
+      # $1/$5 per 1M in/out vs $5/$25 for the Opus tier. The engine default is
+      # pinned literally to claude-opus-4-8 and is not a "latest" alias, so the
+      # model has to be passed explicitly either way.
+      #
+      # Caveat: Haiku 4.5 has a 200K context window, not the 1M of the Opus/Sonnet
+      # tier. Fine for a small PR; a wide diff could overflow Stage 2's assembled
+      # context, in which case raise this to claude-sonnet-5 ($2/$10, 1M).
+      model: claude-haiku-4-5
       review_paths: "**/*.c"
