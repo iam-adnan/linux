@@ -1,9 +1,22 @@
-# Thin caller: delegates to the CodeReviewer engine's reusable Unity review.
+# Self-contained code review (inlined engine steps).
 #
-# NOTE ON THIS REPO: the engine's deep-review stage is Unity/C#-aware, and this
-# repo is C. review_paths is overridden to **/*.c purely so the pipeline has a
-# non-empty reviewable file set to exercise — the review *content* will be
-# off-domain. Left at the default **/*.cs, every gate would report ➖ skipped.
+# AUTH: uses ANTHROPIC_API_KEY, not CLAUDE_CODE_OAUTH_TOKEN. Verified against
+# anthropics/claude-code-action@v1 action.yml:
+#   - `anthropic_api_key` — "required for direct API"
+#   - `github_token`      — "optional if using GitHub App"
+# Passing github_token explicitly means the Claude GitHub App does NOT need to be
+# installed, and `id-token: write` is not needed either (that is only for the
+# workload-identity-federation path). So this route needs exactly two secrets:
+# ANTHROPIC_API_KEY and ENGINE_CHECKOUT_TOKEN.
+#
+# WHY NOT A THIN CALLER: the engine's reusable workflow is in a PRIVATE repo; a
+# cross-repo `uses:` is resolved at parse time with the caller's GITHUB_TOKEN,
+# which cannot read it (zero jobs, "workflow file issue"). Runtime checkout with
+# ENGINE_CHECKOUT_TOKEN works, so the steps are inlined.
+#
+# CHECKOUT: shallow, but NOT blobless/sparse like the secret scan. Stage 1 and
+# Claude both read real file contents, so the worktree must be populated. Depth
+# is bounded by the PR's commit count and protected by the same merge-base guard.
 name: Unity Code Review
 
 on:
@@ -12,26 +25,135 @@ on:
   issue_comment:
     types: [created]          # enables the `@unity-review run` re-run command
 
-# Capped by the caller, so grant them here:
-#   pull-requests: write  -> Stage 3 posts the sticky comment
-#   id-token: write       -> the Claude action's OIDC token exchange
 permissions:
   contents: read
   pull-requests: write
-  id-token: write
 
 jobs:
   review:
-    uses: iam-adnan/CodeReviewer/.github/workflows/unity-review.yml@main
-    secrets: inherit          # forwards CLAUDE_CODE_OAUTH_TOKEN + ENGINE_CHECKOUT_TOKEN
-    with:
-      # Cheapest current model, chosen deliberately for pipeline testing:
-      # $1/$5 per 1M in/out vs $5/$25 for the Opus tier. The engine default is
-      # pinned literally to claude-opus-4-8 and is not a "latest" alias, so the
-      # model has to be passed explicitly either way.
-      #
-      # Caveat: Haiku 4.5 has a 200K context window, not the 1M of the Opus/Sonnet
-      # tier. Fine for a small PR; a wide diff could overflow Stage 2's assembled
-      # context, in which case raise this to claude-sonnet-5 ($2/$10, 1M).
-      model: claude-haiku-4-5
-      review_paths: "**/*.c"
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       contains(github.event.comment.body, '@unity-review run'))
+    concurrency:
+      group: unity-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Guard — required secrets present
+        id: guard
+        env:
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PAT: ${{ secrets.ENGINE_CHECKOUT_TOKEN }}
+        run: |
+          missing=""
+          [ -z "$API_KEY" ] && missing="$missing ANTHROPIC_API_KEY"
+          [ -z "$PAT" ]     && missing="$missing ENGINE_CHECKOUT_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error title=Unity review skipped::Missing secret(s):$missing"
+            exit 1
+          fi
+
+      # The engine's "Free up runner disk" step is deliberately omitted: measured
+      # on this runner, / has 145 G total and 86 G free, so BUG-21's ~14 G premise
+      # does not hold here and the reclaim would only cost time.
+      - name: Resolve PR head, base and depth
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            read -r sha base commits < <(gh pr view "${{ github.event.issue.number }}" \
+              --repo "${{ github.repository }}" \
+              --json headRefOid,baseRefName,commits \
+              -q '[.headRefOid, .baseRefName, (.commits|length)] | @tsv')
+          else
+            sha='${{ github.event.pull_request.head.sha }}'
+            base='${{ github.event.pull_request.base.ref }}'
+            commits='${{ github.event.pull_request.commits }}'
+          fi
+          echo "head_sha=$sha"          >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base"         >> "$GITHUB_OUTPUT"
+          echo "depth=$((commits + 2))" >> "$GITHUB_OUTPUT"
+          echo "Resolved head=$sha base=$base commits=$commits depth=$((commits + 2))"
+
+      - name: Checkout PR code (shallow, full worktree)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: ${{ steps.pr.outputs.depth }}
+
+      - name: Coverage guard — prove the merge base is present
+        env:
+          BASE: ${{ steps.pr.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          DEPTH: ${{ steps.pr.outputs.depth }}
+        run: |
+          set -uo pipefail
+          git fetch --no-tags --depth="$DEPTH" origin "$BASE"
+          for attempt in 1 2 3 4 5; do
+            if git merge-base "origin/$BASE" "$HEAD_SHA" >/dev/null 2>&1; then
+              echo "Merge base reachable; range commits: $(git rev-list --count "origin/$BASE..$HEAD_SHA")"
+              exit 0
+            fi
+            echo "Deepening (attempt $attempt)…"
+            git fetch --no-tags --deepen=250 origin "$BASE" || true
+            git fetch --no-tags --deepen=250 origin "$HEAD_SHA" || true
+          done
+          echo "::error title=Review aborted::Could not establish the merge base; refusing to review a truncated diff."
+          exit 1
+
+      - name: Checkout reviewer engine (runtime, authenticated)
+        uses: actions/checkout@v4
+        with:
+          repository: iam-adnan/CodeReviewer
+          ref: main
+          path: engine
+          token: ${{ secrets.ENGINE_CHECKOUT_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install engine deps
+        working-directory: engine
+        run: npm ci
+
+      - name: Stage 1 — collect deterministic context
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_PATHS: '**/*.c'
+          SPEC_DIRS: 'docs, specs'
+          CONVENTIONS_FILE: 'CLAUDE.md'
+        run: node engine/bin/collect-context.js
+
+      - name: Load review prompt
+        id: prompt
+        run: |
+          {
+            echo 'text<<UNITY_REVIEW_PROMPT_EOF'
+            cat engine/prompts/review-prompt.md
+            echo 'UNITY_REVIEW_PROMPT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Stage 2 — Claude review
+        if: steps.context.outputs.has_reviewable == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          prompt: ${{ steps.prompt.outputs.text }}
+          claude_args: >-
+            --model claude-haiku-4-5
+            --allowedTools Read,Grep,Glob,Write
+
+      - name: Stage 3 — post sticky comment
+        if: always() && steps.guard.outcome != 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node engine/bin/post-comment.js
