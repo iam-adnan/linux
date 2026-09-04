@@ -1,0 +1,6 @@
+# DELIBERATE TEST FIXTURES — NOT REAL CREDENTIALS.
+service: c
+env:
+  encryption_key = 3f7b1d5906428e5c9a3f7b1d5906428e5c9a3f7b
+  session_secret = c1e9a5f3b7d1096428c1e9a5f3b7d1096428c1e9
+  db_password = f7b1d5906428e5c9a3f7b1d5906428e5c9a3f7b1
