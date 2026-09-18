@@ -7,6 +7,6 @@ once the test is done.
 ## Update 1
 Adding a second commit to build up PR history for the scanner to walk.
 
-## Update 2 (intentional test secret — fake AWS credential, for CI scanner testing only)
-AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
-AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+## Update 3
+Removed the test credential block above (simulates a committed-then-removed
+secret, which the scan's base..head history walk should still catch).
