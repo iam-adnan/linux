@@ -7,5 +7,6 @@ once the test is done.
 ## Update 1
 Adding a second commit to build up PR history for the scanner to walk.
 
-## Update 2 (intentional test secret — fake GitHub token, for CI scanner testing only)
-GITHUB_TOKEN=ghp_FAKE1234567890FAKE1234567890FAKE1234
+## Update 3
+Removed the test credential block above (simulates a committed-then-removed
+secret, which the scan's base..head history walk should still catch).
