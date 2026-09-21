@@ -8,3 +8,6 @@ Initial commit.
 
 ## Commit 2
 Trivial update.
+
+## Commit 3
+Another trivial update.
