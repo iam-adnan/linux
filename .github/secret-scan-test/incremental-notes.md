@@ -11,3 +11,6 @@ Trivial update.
 
 ## Commit 3
 Another trivial update.
+
+## Commit 4
+Yet another trivial update.
