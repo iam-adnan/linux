@@ -14,3 +14,6 @@ Another trivial update.
 
 ## Commit 4
 Yet another trivial update.
+
+## Commit 5 (intentional test secret — fake GitHub token, for CI scanner testing only)
+GITHUB_TOKEN=ghp_TESTFAKE0987654321TESTFAKE0987654321
